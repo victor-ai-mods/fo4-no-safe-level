@@ -5,6 +5,8 @@
 для урона врагов введены поправочные коэффициенты, так что бой на 50-м уровне ощущается как Корвега на
 4-м. Одна настройка в MCM — **«Уровень угрозы»** 1–10 (5 — задуманный баланс, настроен под «Выживание»).
 
+Скачать: [Nexus Mods](https://www.nexusmods.com/fallout4/mods/109500).
+
 **Спойлер.** На странице Nexus механика намеренно не раскрывается. Здесь она описана полностью:
 идея и расчёты — `ANALYSIS.md`, решения, результаты тестов в игре и формулы — `PLAN.md`.
 
@@ -75,6 +77,7 @@ python tools/gen_mcm.py           # mod\MCM\Config\NoSafeLevel\config.json, mod\
 python tools/deploy.py            # в игру (оба Plugins.txt); --remove — убрать; --test — тестовый плагин
 python tools/sim.py               # проверка математики и «попаданий до смерти»
 python tools/gen_cover.py         # images\cover.png, images\banner.png для Nexus
+python tools/gen_banner.py        # images\banner2.png (шапка Nexus) из images\cover2.png
 ```
 
 `<F4SE Scripts\Source>` — исходники скриптов F4SE; `Data\Scripts\Source\User` должен содержать

@@ -5,6 +5,8 @@ become a walking tank: enemies barely scratch you. With this mod armor damage re
 25%, and enemy damage gets correction multipliers, so a fight at level 50 feels like Corvega at level 4.
 One MCM setting: **Threat level** 1-10 (5 is the intended balance, tuned for Survival).
 
+Download: [Nexus Mods](https://www.nexusmods.com/fallout4/mods/109500).
+
 **Spoiler warning.** The Nexus page keeps the mechanics secret on purpose. This repository explains them
 in full: the design notes are in Russian (`ANALYSIS.md`, `PLAN.md`), the details below are in English.
 
@@ -42,8 +44,8 @@ Tested on game version 1.10.163 (pre-Next-Gen).
 
 See [README.ru.md](README.ru.md#сборка). Everything is generated from the game files: `tools/scan_weapons.py`
 and `tools/bands.py` (damage bands), `tools/gen_esp.py` (the ESP), `tools/gen_mcm.py` (MCM config and
-translations), PapyrusCompiler (the script), `tools/deploy.py` (into the game), `tools/gen_cover.py` (Nexus
-images). `tools/sim.py` checks the script's math.
+translations), PapyrusCompiler (the script), `tools/deploy.py` (into the game), `tools/gen_cover.py` and
+`tools/gen_banner.py` (Nexus images). `tools/sim.py` checks the script's math.
 
 ## License
 
