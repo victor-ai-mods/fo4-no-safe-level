@@ -6,12 +6,13 @@
     GLOB  NSL_Enabled        — 0 = мод выключен (все множители 1), для калибровки и перед удалением
     GLOB  NSL_Debug          — 1 = писать попадания по игроку в Data\\NoSafeLevel\\NoSafeLevel.log
     PERK  NSL_Perk           — по записи на полосу: EP 36 «Multiply 1 + Actor Value Mult» на своё AV;
-                               у смешанных полос ещё EP 94 с EPIsDamageType(dtEnergy)
-    FLST  NSL_KnownWeapons   — всё оружие Fallout4.esm; запасные записи срабатывают только на чужое
+                               у смешанных полос ещё EP 94 с EPIsDamageType(dtEnergy); запасные
+                               записи срабатывают только на оружие не из Fallout4.esm
     AVIF  NSL_B*             — по AV на запись перка (Variable, по умолчанию 0 = без изменений)
 
 Что работает в условиях — проверено тестом (PLAN.md, «Результаты теста»): GetIsID и HasKeyword на
-вкладке оружия атакующего; GetActorValue и IsWeaponInList на вкладке атакующего.
+вкладке оружия атакующего; GetActorValue и IsWeaponInList на вкладке атакующего. IsWeaponInList
+не использовать: вешает игру в бою (PLAN.md, «Зависание в бою»).
 
     python tools/bands.py && python tools/gen_esp.py
 """
@@ -74,7 +75,7 @@ FID_THREAT = BASE | 0x801
 FID_ENABLED = BASE | 0x802
 FID_DEBUG = BASE | 0x803
 FID_PERK = BASE | 0x804
-FID_KNOWN = BASE | 0x805
+FID_KNOWN = BASE | 0x805                             # был FLST NSL_KnownWeapons (до 1.0.1), не занимать
 FID_AV_FIRST = 0x810
 
 
@@ -165,9 +166,12 @@ def build(data):
             weapon = [ctda(CF_HAS_KEYWORD, 1.0, KEYWORDS['WeaponTypeUnarmed'])]
             weapon += [ctda(CF_GET_IS_ID, 0.0, w) for w in data['unarmed_with_base']]
         else:
-            attacker.append(ctda(CF_IS_WEAPON_IN_LIST, 0.0, FID_KNOWN))
+            # «Не оружие Fallout4.esm» — цепочкой GetIsID(w) == 0 на вкладке оружия, а не IsWeaponInList на
+            # вкладке атакующего: тот берёт замок экипировки атакующего под глобальным замком перков, а ИИ боя
+            # (Actor::CalculateDamagePerSecond) берёт их в обратном порядке — взаимная блокировка, игра висит.
             weapon = fallback_conditions(b['keywords'])
             weapon += [ctda(CF_HAS_KEYWORD, 0.0, KEYWORDS[k]) for k in data['fallback_exclude']]
+            weapon += [ctda(CF_GET_IS_ID, 0.0, w) for w in data['known']]
         kind = {'phys': KIND_PHYS, 'energy': KIND_ENERGY, 'mixed': KIND_MIXED}[b['dtype']]
         entry_id = len(table)
         add_entry(perk, entry_id, EP_INCOMING_WEAPON, av, {1: attacker, 2: weapon})
@@ -177,10 +181,6 @@ def build(data):
             add_entry(perk, len(table), EP_TYPED_INCOMING, av_en,
                       {1: attacker, 2: weapon, 3: [ctda(CF_EP_IS_DAMAGE_TYPE, 1.0, DT_ENERGY)]})
             table.append((av_en, KIND_MIXED_ENERGY, b))
-
-    known = Record(b'FLST', FID_KNOWN, 'NSL_KnownWeapons')
-    for w in data['known']:
-        known.add(b'LNAM', struct.pack('<I', w))
 
     quest = Record(b'QUST', FID_QUEST, 'NSL_Quest')
     s = Script(SCRIPT_MAIN)
@@ -207,7 +207,7 @@ def build(data):
 
     globs = [glob(FID_THREAT, 'NSL_ThreatLevel', 5.0), glob(FID_ENABLED, 'NSL_Enabled', 1.0),
              glob(FID_DEBUG, 'NSL_Debug', 0.0)]
-    groups = [(b'GLOB', globs), (b'AVIF', avifs), (b'FLST', [known]), (b'PERK', [perk]), (b'QUST', [quest])]
+    groups = [(b'GLOB', globs), (b'AVIF', avifs), (b'PERK', [perk]), (b'QUST', [quest])]
     return groups, next_av, table
 
 
@@ -217,10 +217,12 @@ def check(path, n_entries, n_avifs):
     assert plugin.masters == ['Fallout4.esm'], 'мастера: %r' % (plugin.masters,)
     counts = {sig.decode(): sum(1 for _ in plugin.records(sig))
               for sig in (b'GLOB', b'AVIF', b'FLST', b'PERK', b'QUST')}
-    assert counts == {'GLOB': 3, 'AVIF': n_avifs, 'FLST': 1, 'PERK': 1, 'QUST': 1}, counts
+    assert counts == {'GLOB': 3, 'AVIF': n_avifs, 'FLST': 0, 'PERK': 1, 'QUST': 1}, counts
     perk = next(plugin.records(b'PERK'))
     n = sum(1 for tag, _ in perk.subrecords() if tag == b'PRKE')
     assert n == n_entries, 'записей в перке: %d' % n
+    funcs = {struct.unpack_from('<H', data, 8)[0] for tag, data in perk.subrecords() if tag == b'CTDA'}
+    assert CF_IS_WEAPON_IN_LIST not in funcs, 'IsWeaponInList в условиях перка — взаимная блокировка в бою'
     print('  проверка: мастер один, записи %s, записей в перке %d' % (counts, n))
 
 
