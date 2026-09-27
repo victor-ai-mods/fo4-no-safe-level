@@ -1,0 +1,290 @@
+Scriptname NSL:Main extends Quest
+
+; No Safe Level: урон по игроку не должен «проваливаться» с ростом уровня.
+;
+; Перк NSL_Perk на игроке умножает урон попадания на (1 + AV полосы): полоса — группа атак с близким
+; уроном и одним типом (оружие Fallout4.esm по GetIsID, атаки существ по UnarmedDamage, прочее оружие
+; по ключевым словам). Этот скрипт раз в POLL_INTERVAL секунд проверяет уровень, DR/ER, «Уровень угрозы»
+; и множитель Выживания и, если что-то изменилось, пересчитывает AV всех полос.
+;
+; Для полосы с типичным уроном P нужный урон до брони Q = max(K(L)·P, c·Пол(L)), броня гасит на
+; четверть меньше, «Уровень угрозы» умножает результат на s. Движок сам применяет броню, поэтому
+; скрипт решает обратную задачу — во сколько раз умножить урон, чтобы ванильная формула выдала нужное:
+;   физический урон: перк действует ДО брони, коэффициент брони считается от уже умноженного урона;
+;   энергоурон: коэффициент брони движок считает от базового урона оружия (баг энергоурона), поэтому
+;   множитель ложится поверх. Оба случая проверены тестовым плагином (PLAN.md, «Результаты теста»).
+; Выживание даёт ×2 до брони (перк HC_DamageMultPerk через HC_IncomingDamageMult) и ×2 после (GMST);
+; второе сокращается, первое учитывается как afPre.
+
+Perk Property NSL_Perk Auto Const Mandatory
+ActorValue Property Health Auto Const Mandatory
+ActorValue Property DamageResist Auto Const Mandatory
+ActorValue Property EnergyResist Auto Const Mandatory
+ActorValue Property UnarmedDamage Auto Const Mandatory
+ActorValue Property HC_IncomingDamageMult Auto Const Mandatory
+GlobalVariable Property HC_Rule_ScaleDamage Auto Const Mandatory
+GlobalVariable Property NSL_ThreatLevel Auto Const Mandatory
+GlobalVariable Property NSL_Enabled Auto Const Mandatory
+GlobalVariable Property NSL_Debug Auto Const Mandatory
+
+; Таблица полос (генерируется tools/gen_esp.py из data/bands.json).
+ActorValue[] Property BandAV Auto Const Mandatory
+Int[] Property BandKind Auto Const Mandatory
+Float[] Property BandPhys Auto Const Mandatory
+Float[] Property BandEnergy Auto Const Mandatory
+Float[] Property BandFloorCoef Auto Const Mandatory
+Float[] Property BandKWeight Auto Const Mandatory    ; 0 — атака существа: её урон и так растёт с уровнем, K не нужен
+String[] Property BandName Auto Const Mandatory
+Float[] Property KLevel Auto Const Mandatory
+Float[] Property KValue Auto Const Mandatory
+
+Int Property KIND_PHYS = 0 AutoReadOnly
+Int Property KIND_ENERGY = 1 AutoReadOnly
+Int Property KIND_MIXED = 2 AutoReadOnly            ; EP 36 смешанной полосы: считается по физической части
+Int Property KIND_MIXED_ENERGY = 3 AutoReadOnly     ; EP 94 смешанной полосы: поправка энергетической части
+Float Property ALPHA = 0.15 AutoReadOnly            ; fPhysicalDamageFactor
+Float Property BETA = 0.365 AutoReadOnly            ; fPhysicalArmorDmgReductionExp
+Float Property MAX_COEF = 0.99 AutoReadOnly
+Float Property ARMOR_EFFECT = 0.75 AutoReadOnly     ; броня гасит на четверть меньше
+Float Property FLOOR_DIVISOR = 16.0 AutoReadOnly    ; Пол = HP_эталон / 16: без брони на Выживании 4 попадания
+Float Property HP_REF_BASE = 105.0 AutoReadOnly     ; HP при ВЫН 5: 80 + 5·5 + (L − 1)·(2.5 + 5/2)
+Float Property HP_REF_PER_LEVEL = 5.0 AutoReadOnly
+Float Property POLL_INTERVAL = 3.0 AutoReadOnly
+String Property LOG_PATH = ".\\Data\\NoSafeLevel\\" AutoReadOnly
+String Property LOG_FILE = "NoSafeLevel.log" AutoReadOnly
+Int Property MAX_LOG_LINES = 120 AutoReadOnly
+
+Actor Player
+Bool Calculated
+Int LastLevel
+Float LastDR
+Float LastER
+Float LastThreat
+Float LastEnabled
+Float LastPre
+Bool DebugOn
+Float LastHealth
+String[] LogLines
+
+Event OnQuestInit()
+    Setup()
+EndEvent
+
+Event Actor.OnPlayerLoadGame(Actor akSender)
+    Setup()
+EndEvent
+
+Function Setup()
+    Player = Game.GetPlayer()
+    RegisterForRemoteEvent(Player, "OnPlayerLoadGame")
+    If !Player.HasPerk(NSL_Perk)
+        Player.AddPerk(NSL_Perk)
+    EndIf
+    Calculated = false
+    DebugOn = false
+    Check()
+    StartTimer(POLL_INTERVAL)
+EndFunction
+
+Event OnTimer(int aiTimerID)
+    Check()
+    StartTimer(POLL_INTERVAL)
+EndEvent
+
+Function Check()
+    Int level = Player.GetLevel()
+    Float dr = Player.GetValue(DamageResist)
+    Float er = Player.GetValue(EnergyResist)
+    Float threat = NSL_ThreatLevel.GetValue()
+    Float enabled = NSL_Enabled.GetValue()
+    Float pre = SurvivalPreMult()
+    If !Calculated || level != LastLevel || Math.abs(dr - LastDR) > 0.5 || Math.abs(er - LastER) > 0.5 \
+            || threat != LastThreat || enabled != LastEnabled || pre != LastPre
+        Recalc(level, dr, er, threat, enabled, pre)
+        Calculated = true
+        LastLevel = level
+        LastDR = dr
+        LastER = er
+        LastThreat = threat
+        LastEnabled = enabled
+        LastPre = pre
+        If DebugOn
+            LogState()
+        EndIf
+    EndIf
+    UpdateDebug()
+EndFunction
+
+; Множитель Выживания до брони: ванильный перк HC_DamageMultPerk умножает урон на HC_IncomingDamageMult,
+; когда HC_Rule_ScaleDamage = 1.
+Float Function SurvivalPreMult()
+    If HC_Rule_ScaleDamage.GetValue() >= 0.5
+        Return Player.GetValue(HC_IncomingDamageMult)
+    EndIf
+    Return 1.0
+EndFunction
+
+Function Recalc(Int aiLevel, Float afDR, Float afER, Float afThreat, Float afEnabled, Float afPre)
+    Int n = BandAV.Length
+    Int i = 0
+    If afEnabled < 0.5
+        While i < n
+            Player.SetValue(BandAV[i], 0.0)
+            i += 1
+        EndWhile
+        Return
+    EndIf
+    Float k = KFor(aiLevel)
+    Float floorDamage = (HP_REF_BASE + HP_REF_PER_LEVEL * (aiLevel - 1)) / FLOOR_DIVISOR
+    Float s = Math.pow(2.0, (afThreat - 5.0) / 4.0)
+    Float ph
+    Float en
+    Float total
+    Float q
+    Float y
+    Float kBand
+    Int kind
+    While i < n
+        ph = BandPhys[i]
+        en = BandEnergy[i]
+        total = ph + en
+        y = 1.0
+        If total > 0.0
+            kBand = 1.0 + BandKWeight[i] * (k - 1.0)
+            q = Math.Max(kBand * total, BandFloorCoef[i] * floorDamage) / total
+            kind = BandKind[i]
+            If kind == KIND_PHYS || kind == KIND_MIXED
+                y = SolvePhys(ph, q, s, afPre, afDR)
+            ElseIf kind == KIND_ENERGY
+                y = SolveEnergy(en, q, s, afPre, afER)
+            Else
+                y = SolveEnergy(en, q, s, afPre, afER) / SolvePhys(ph, q, s, afPre, afDR)
+            EndIf
+        EndIf
+        Player.SetValue(BandAV[i], y - 1.0)
+        i += 1
+    EndWhile
+EndFunction
+
+; K(L): кусочно-линейно по таблице, за её пределами — по крайним отрезкам.
+Float Function KFor(Int aiLevel)
+    Float level = aiLevel as Float
+    Int last = KLevel.Length - 1
+    If level <= KLevel[0]
+        Return KValue[0]
+    EndIf
+    Int i = 1
+    While i < last && level > KLevel[i]
+        i += 1
+    EndWhile
+    Float t = (level - KLevel[i - 1]) / (KLevel[i] - KLevel[i - 1])
+    Return KValue[i - 1] + t * (KValue[i] - KValue[i - 1])
+EndFunction
+
+; Доля урона, проходящая через броню (ванильная формула; при сопротивлении 0 — вся).
+Float Function Coef(Float afDamage, Float afResist)
+    If afResist <= 0.0
+        Return 1.0
+    EndIf
+    Float m = Math.pow(ALPHA * afDamage / afResist, BETA)
+    If m > MAX_COEF
+        Return MAX_COEF
+    EndIf
+    Return m
+EndFunction
+
+Float Function SoftCoef(Float afDamage, Float afResist)
+    Return 1.0 - ARMOR_EFFECT * (1.0 - Coef(afDamage, afResist))
+EndFunction
+
+; x · Coef(x) = afTarget -> x.
+Float Function InvertArmor(Float afTarget, Float afResist)
+    If afResist <= 0.0
+        Return afTarget
+    EndIf
+    Float x = Math.pow(afTarget * Math.pow(afResist / ALPHA, BETA), 1.0 / (1.0 + BETA))
+    If Coef(x, afResist) >= MAX_COEF
+        x = afTarget / MAX_COEF
+    EndIf
+    Return x
+EndFunction
+
+; Физический урон: множитель действует до брони.
+Float Function SolvePhys(Float afDamage, Float afScale, Float afThreat, Float afPre, Float afResist)
+    Float paper = afScale * afDamage * afPre
+    Float target = afThreat * paper * SoftCoef(paper, afResist)
+    Return InvertArmor(target, afResist) / (afDamage * afPre)
+EndFunction
+
+; Энергоурон: коэффициент брони движок берёт от базового урона, множитель ложится поверх.
+Float Function SolveEnergy(Float afDamage, Float afScale, Float afThreat, Float afPre, Float afResist)
+    Float paper = afScale * afDamage * afPre
+    Float target = afThreat * paper * SoftCoef(paper, afResist)
+    Return target / (afDamage * afPre * Coef(afDamage, afResist))
+EndFunction
+
+; --- отладка: set NSL_Debug to 1 ------------------------------------------------------------
+
+Function UpdateDebug()
+    Bool wanted = NSL_Debug.GetValue() >= 0.5
+    If wanted && !DebugOn
+        DebugOn = true
+        LogLines = new String[0]
+        LastHealth = Player.GetValue(Health)
+        Log("debug on")
+        LogState()
+        RegisterForHitEvent(Player)
+    ElseIf !wanted && DebugOn
+        DebugOn = false
+        UnregisterForHitEvent(Player)
+        Log("debug off")
+        Flush()
+    EndIf
+EndFunction
+
+Function LogState()
+    Log("state level=" + LastLevel + " DR=" + LastDR + " ER=" + LastER + " threat=" + LastThreat \
+        + " enabled=" + LastEnabled + " pre=" + LastPre + " K=" + KFor(LastLevel))
+    Int i = 0
+    String line = "bands"
+    While i < BandAV.Length
+        line += " " + i + ":" + (1.0 + Player.GetValue(BandAV[i]))
+        If i % 12 == 11
+            Log(line)
+            line = "bands"
+        EndIf
+        i += 1
+    EndWhile
+    Log(line)
+    Flush()
+EndFunction
+
+Event OnHit(ObjectReference akTarget, ObjectReference akAggressor, Form akSource, Projectile akProjectile, \
+        bool abPowerAttack, bool abSneakAttack, bool abBashAttack, bool abHitBlocked, string asMaterialName)
+    If !DebugOn
+        Return
+    EndIf
+    Float current = Player.GetValue(Health)
+    Actor attacker = akAggressor as Actor
+    String who = "none"
+    If attacker
+        who = attacker.GetActorBase() + " lvl=" + attacker.GetLevel() + " unarmed=" + attacker.GetValue(UnarmedDamage)
+    EndIf
+    Log("hit " + who + " src=" + akSource + " proj=" + akProjectile + " dmg=" + (LastHealth - current) \
+        + " DR=" + Player.GetValue(DamageResist) + " ER=" + Player.GetValue(EnergyResist) \
+        + " power=" + abPowerAttack + " bash=" + abBashAttack)
+    LastHealth = current
+    Flush()
+    RegisterForHitEvent(Player)
+EndEvent
+
+Function Log(String asLine)
+    LogLines.Add(asLine)
+    If LogLines.Length > MAX_LOG_LINES
+        LogLines.Remove(0)
+    EndIf
+EndFunction
+
+Function Flush()
+    GardenOfEden3.WriteLinesToFile(LOG_FILE, LOG_PATH, LogLines, true)
+EndFunction

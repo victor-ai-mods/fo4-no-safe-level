@@ -1,0 +1,13 @@
+# Сгенерированное: esp из tools/gen_esp.py и tools/gen_test_esp.py, .pex из PapyrusCompiler
+build/
+
+# Данные из файлов игры (tools/scan_weapons.py, tools/bands.py): чужой контент в публичный репозиторий не кладём
+data/
+
+*.log
+__pycache__/
+*.pyc
+
+# Материалы страницы на Nexus
+release/
+images/

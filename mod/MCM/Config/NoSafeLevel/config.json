@@ -1,0 +1,33 @@
+{
+    "modName": "NoSafeLevel",
+    "displayName": "$NSL_MOD_NAME",
+    "minMcmVersion": 2,
+    "pluginRequirements": [
+        "NoSafeLevel.esp"
+    ],
+    "content": [
+        {
+            "type": "text",
+            "text": "$NSL_ABOUT"
+        },
+        {
+            "type": "spacer"
+        },
+        {
+            "type": "section",
+            "text": "$NSL_SEC_MAIN"
+        },
+        {
+            "type": "slider",
+            "text": "$NSL_THREAT",
+            "help": "$NSL_THREAT_HELP",
+            "valueOptions": {
+                "min": 1,
+                "max": 10,
+                "step": 1,
+                "sourceType": "GlobalValue",
+                "sourceForm": "NoSafeLevel.esp|801"
+            }
+        }
+    ]
+}
