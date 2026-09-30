@@ -28,6 +28,25 @@
                 "sourceType": "GlobalValue",
                 "sourceForm": "NoSafeLevel.esp|801"
             }
+        },
+        {
+            "type": "spacer"
+        },
+        {
+            "type": "section",
+            "text": "$NSL_SEC_HEALTH"
+        },
+        {
+            "type": "slider",
+            "text": "$NSL_HEALTH_CAP",
+            "help": "$NSL_HEALTH_CAP_HELP",
+            "valueOptions": {
+                "min": 0,
+                "max": 100,
+                "step": 1,
+                "sourceType": "GlobalValue",
+                "sourceForm": "NoSafeLevel.esp|806"
+            }
         }
     ]
 }

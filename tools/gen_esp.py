@@ -5,6 +5,10 @@
     GLOB  NSL_ThreatLevel    — «Уровень угрозы» 1..10 (MCM, sourceType GlobalValue)
     GLOB  NSL_Enabled        — 0 = мод выключен (все множители 1), для калибровки и перед удалением
     GLOB  NSL_Debug          — 1 = писать попадания по игроку в Data\\NoSafeLevel\\NoSafeLevel.log
+    GLOB  NSL_HealthLevelCap — после какого уровня убрать врагам прибавку здоровья за уровень, 0..100
+                               (MCM), 0 = выключено
+    AVIF  NSL_HealthCapApplied — на враге: сколько здоровья снято (чтобы вернуть при смене настройки)
+    FLST  NSL_ActorTypes     — ключевые слова ActorType*, по которым NSL:Main ищет врагов вокруг
     PERK  NSL_Perk           — по записи на полосу: EP 36 «Multiply 1 + Actor Value Mult» на своё AV;
                                у смешанных полос ещё EP 94 с EPIsDamageType(dtEnergy); запасные
                                записи срабатывают только на оружие не из Fallout4.esm
@@ -40,6 +44,13 @@ AV_UNARMED_DAMAGE = 0x2DF
 AV_HC_INCOMING = 0x84A
 GLOB_HC_SCALE_DAMAGE = 0x84C
 DT_ENERGY = 0x60A81
+# Ключевые слова рас, покрывающие всех актёров игры и DLC, кроме двух рас Far Harbor (их ключевое слово
+# скрипт добавляет в список сам, если DLCCoast.esm установлен).
+ACTOR_TYPE_KEYWORDS = {
+    'ActorTypeNPC': 0x013794, 'ActorTypeCreature': 0x013795, 'ActorTypeAnimal': 0x013798,
+    'ActorTypeRobot': 0x02CB73, 'ActorTypeTurret': 0x0B2BF3, 'ActorTypeSuperMutant': 0x06D7B6,
+    'ActorTypeSuperMutantBehemoth': 0x14F6A5, 'ActorTypeSynth': 0x10C3CE,
+}
 KEYWORDS = {
     'WeaponTypeUnarmed': 0x05240E, 'WeaponTypeExplosive': 0x04C922, 'WeaponTypeGrenade': 0x10C415,
     'WeaponTypeMine': 0x10C414, 'WeaponTypeThrown': 0x04A0A6, 'WeaponTypeMelee1H': 0x04A0A4,
@@ -76,6 +87,9 @@ FID_ENABLED = BASE | 0x802
 FID_DEBUG = BASE | 0x803
 FID_PERK = BASE | 0x804
 FID_KNOWN = BASE | 0x805                             # был FLST NSL_KnownWeapons (до 1.0.1), не занимать
+FID_HEALTH_CAP = BASE | 0x806
+FID_HEALTH_APPLIED = BASE | 0x807
+FID_ACTOR_TYPES = BASE | 0x808
 FID_AV_FIRST = 0x810
 
 
@@ -187,7 +201,9 @@ def build(data):
     for name, fid in [('NSL_Perk', FID_PERK), ('Health', AV_HEALTH), ('DamageResist', AV_DAMAGE_RESIST),
                       ('EnergyResist', AV_ENERGY_RESIST), ('UnarmedDamage', AV_UNARMED_DAMAGE),
                       ('HC_IncomingDamageMult', AV_HC_INCOMING), ('HC_Rule_ScaleDamage', GLOB_HC_SCALE_DAMAGE),
-                      ('NSL_ThreatLevel', FID_THREAT), ('NSL_Enabled', FID_ENABLED), ('NSL_Debug', FID_DEBUG)]:
+                      ('NSL_ThreatLevel', FID_THREAT), ('NSL_Enabled', FID_ENABLED), ('NSL_Debug', FID_DEBUG),
+                      ('NSL_HealthLevelCap', FID_HEALTH_CAP), ('NSL_HealthCapApplied', FID_HEALTH_APPLIED),
+                      ('NSL_ActorTypes', FID_ACTOR_TYPES)]:
         s.prop(name, PROP_OBJECT, fid)
     s.prop('BandAV', PROP_ARRAY_OBJECT, [t[0] for t in table])
     s.prop('BandKind', PROP_ARRAY_INT, [t[1] for t in table])
@@ -206,8 +222,14 @@ def build(data):
     quest.add(b'ANAM', struct.pack('<I', 0))
 
     globs = [glob(FID_THREAT, 'NSL_ThreatLevel', 5.0), glob(FID_ENABLED, 'NSL_Enabled', 1.0),
-             glob(FID_DEBUG, 'NSL_Debug', 0.0)]
-    groups = [(b'GLOB', globs), (b'AVIF', avifs), (b'PERK', [perk]), (b'QUST', [quest])]
+             glob(FID_DEBUG, 'NSL_Debug', 0.0), glob(FID_HEALTH_CAP, 'NSL_HealthLevelCap', 50.0)]
+    avifs.append(avif(FID_HEALTH_APPLIED, 'NSL_HealthCapApplied',
+                      'No Safe Level: health removed from this enemy by the level cap'))
+    actor_types = Record(b'FLST', FID_ACTOR_TYPES, 'NSL_ActorTypes')
+    for fid in ACTOR_TYPE_KEYWORDS.values():
+        actor_types.add(b'LNAM', struct.pack('<I', fid))
+    groups = [(b'GLOB', globs), (b'AVIF', avifs), (b'FLST', [actor_types]), (b'PERK', [perk]),
+              (b'QUST', [quest])]
     return groups, next_av, table
 
 
@@ -217,7 +239,10 @@ def check(path, n_entries, n_avifs):
     assert plugin.masters == ['Fallout4.esm'], 'мастера: %r' % (plugin.masters,)
     counts = {sig.decode(): sum(1 for _ in plugin.records(sig))
               for sig in (b'GLOB', b'AVIF', b'FLST', b'PERK', b'QUST')}
-    assert counts == {'GLOB': 3, 'AVIF': n_avifs, 'FLST': 0, 'PERK': 1, 'QUST': 1}, counts
+    assert counts == {'GLOB': 4, 'AVIF': n_avifs, 'FLST': 1, 'PERK': 1, 'QUST': 1}, counts
+    ids = [r.local_id for sig in (b'GLOB', b'AVIF', b'FLST', b'PERK', b'QUST') for r in plugin.records(sig)]
+    assert FID_KNOWN & 0xFFFFFF not in ids, 'FormID 0x805 занят снова (был FLST до 1.0.1)'
+    assert len(ids) == len(set(ids)), 'повторяющиеся FormID'
     perk = next(plugin.records(b'PERK'))
     n = sum(1 for tag, _ in perk.subrecords() if tag == b'PRKE')
     assert n == n_entries, 'записей в перке: %d' % n
@@ -237,7 +262,7 @@ def main():
     with open(out_path, 'wb') as f:
         f.write(blob)
     print('%s: %d байт, записей перка %d' % (out_path, len(blob), len(table)))
-    check(out_path, len(table), len(table))
+    check(out_path, len(table), len(table) + 1)
 
 
 if __name__ == '__main__':

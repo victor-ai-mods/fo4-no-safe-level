@@ -15,6 +15,12 @@ Scriptname NSL:Main extends Quest
 ;   множитель ложится поверх. Оба случая проверены тестовым плагином (PLAN.md, «Результаты теста»).
 ; Выживание даёт ×2 до брони (перк HC_DamageMultPerk через HC_IncomingDamageMult) и ×2 после (GMST);
 ; второе сокращается, первое учитывается как afPre.
+;
+; Здоровье врагов. Движок даёт NPC здоровье = раса + запись NPC + fNPCHealthLevelBonus (5) · (уровень − 1)
+; (Fallout4.exe 1.10.163, 0x1405BADF0; у игрока своя GMST fPCHealthLevelBonus). Если задан предел
+; NSL_HealthLevelCap, враг выше него теряет прибавку за уровни сверх предела: базовое здоровье его
+; варианта остаётся, прибавка считается как на уровне предела. Снятое записывается на самого врага
+; в NSL_HealthCapApplied, поэтому смена предела или выключение мода возвращают здоровье.
 
 Perk Property NSL_Perk Auto Const Mandatory
 ActorValue Property Health Auto Const Mandatory
@@ -26,6 +32,9 @@ GlobalVariable Property HC_Rule_ScaleDamage Auto Const Mandatory
 GlobalVariable Property NSL_ThreatLevel Auto Const Mandatory
 GlobalVariable Property NSL_Enabled Auto Const Mandatory
 GlobalVariable Property NSL_Debug Auto Const Mandatory
+GlobalVariable Property NSL_HealthLevelCap Auto Const Mandatory
+ActorValue Property NSL_HealthCapApplied Auto Const Mandatory
+FormList Property NSL_ActorTypes Auto Const Mandatory
 
 ; Таблица полос (генерируется tools/gen_esp.py из data/bands.json).
 ActorValue[] Property BandAV Auto Const Mandatory
@@ -50,6 +59,10 @@ Float Property FLOOR_DIVISOR = 16.0 AutoReadOnly    ; Пол = HP_эталон /
 Float Property HP_REF_BASE = 105.0 AutoReadOnly     ; HP при ВЫН 5: 80 + 5·5 + (L − 1)·(2.5 + 5/2)
 Float Property HP_REF_PER_LEVEL = 5.0 AutoReadOnly
 Float Property POLL_INTERVAL = 3.0 AutoReadOnly
+Float Property SCAN_RADIUS = 10000.0 AutoReadOnly   ; ~ загруженная область снаружи (uGridsToLoad 5)
+String Property FAR_HARBOR = "DLCCoast.esm" AutoReadOnly
+Int Property FAR_HARBOR_CREATURES = 0x057760 AutoReadOnly   ; DLC03AchievementCreaturesKeyword: у рас краба-
+                                                            ; отшельника и туманного ползуна нет ActorType*
 String Property LOG_PATH = ".\\Data\\NoSafeLevel\\" AutoReadOnly
 String Property LOG_FILE = "NoSafeLevel.log" AutoReadOnly
 Int Property MAX_LOG_LINES = 120 AutoReadOnly
@@ -65,6 +78,10 @@ Float LastPre
 Bool DebugOn
 Float LastHealth
 String[] LogLines
+Float HealthLevelBonus
+Bool Scanning
+Actor[] Skipped
+String LastScanInfo
 
 Event OnQuestInit()
     Setup()
@@ -80,6 +97,14 @@ Function Setup()
     If !Player.HasPerk(NSL_Perk)
         Player.AddPerk(NSL_Perk)
     EndIf
+    HealthLevelBonus = Game.GetGameSettingFloat("fNPCHealthLevelBonus")
+    If Game.IsPluginInstalled(FAR_HARBOR)
+        Keyword creatures = Game.GetFormFromFile(FAR_HARBOR_CREATURES, FAR_HARBOR) as Keyword
+        If creatures && !NSL_ActorTypes.HasForm(creatures)
+            NSL_ActorTypes.AddForm(creatures)
+        EndIf
+    EndIf
+    Scanning = false
     Calculated = false
     DebugOn = false
     Check()
@@ -88,6 +113,7 @@ EndFunction
 
 Event OnTimer(int aiTimerID)
     Check()
+    CapEnemyHealth()
     StartTimer(POLL_INTERVAL)
 EndEvent
 
@@ -223,13 +249,109 @@ Float Function SolveEnergy(Float afDamage, Float afScale, Float afThreat, Float 
     Return target / (afDamage * afPre * Coef(afDamage, afResist))
 EndFunction
 
+; --- здоровье врагов --------------------------------------------------------------------------
+
+Function CapEnemyHealth()
+    If Scanning
+        Return
+    EndIf
+    Scanning = true
+    Int cap = NSL_HealthLevelCap.GetValueInt()
+    If NSL_Enabled.GetValue() < 0.5
+        cap = 0
+    EndIf
+    ; По одному ключевому слову: FindAllReferencesWithKeyword со списком FormList находит 0 (проверено в игре),
+    ; хотя в документации список разрешён. Актёр с двумя ключевыми словами попадёт дважды — второй раз
+    ; CapActor ничего не сделает.
+    Int total = 0
+    Int k = 0
+    Int types = NSL_ActorTypes.GetSize()
+    While k < types
+        ObjectReference[] found = Player.FindAllReferencesWithKeyword(NSL_ActorTypes.GetAt(k), SCAN_RADIUS)
+        total += found.Length
+        Int i = 0
+        While i < found.Length
+            Actor npc = found[i] as Actor
+            If npc && npc != Player
+                CapActor(npc, cap)
+            EndIf
+            i += 1
+        EndWhile
+        k += 1
+    EndWhile
+    If DebugOn
+        LogScan(cap, total, types)
+    EndIf
+    Scanning = false
+EndFunction
+
+; Прибавка здоровья за уровень так, как её считает движок: (int)((L − 1) · fNPCHealthLevelBonus).
+Float Function LevelBonus(Int aiLevel)
+    Return Math.Floor((aiLevel - 1) * HealthLevelBonus) as Float
+EndFunction
+
+Function CapActor(Actor akActor, Int aiCap)
+    Int level = akActor.GetLevel()
+    Float wanted = 0.0
+    If aiCap > 0 && level > aiCap
+        wanted = LevelBonus(level) - LevelBonus(aiCap)
+    EndIf
+    Float applied = akActor.GetValue(NSL_HealthCapApplied)
+    If wanted == applied || akActor.IsDead()
+        Return
+    EndIf
+    ; Отключённые и ещё не загруженные (засады, ожидающие спавна) — здоровье у них ещё не рассчитано
+    ; (в игре: база 50 при текущем 385), ModValue не держится. Их обработает обход после появления.
+    If akActor.IsDisabled() || !akActor.Is3DLoaded()
+        Return
+    EndIf
+    ; Новых — только врагов; у уже обработанных здоровье пересчитывается всегда (смена предела, выключение).
+    If applied == 0.0 && (akActor.IsPlayerTeammate() || !akActor.IsHostileToActor(Player))
+        If DebugOn && Skipped.Find(akActor) < 0 && Skipped.Length < 100
+            Skipped.Add(akActor)
+            Log("hpcap skip " + akActor + " " + akActor.GetActorBase() + " lvl=" + level + " hostile=" \
+                + akActor.IsHostileToActor(Player) + " teammate=" + akActor.IsPlayerTeammate())
+            Flush()
+        EndIf
+        Return
+    EndIf
+    Float change = wanted - applied                  ; > 0 — снять здоровье, < 0 — вернуть
+    Float before = akActor.GetValue(Health)
+    If change > 0.0 && change > before - 1.0
+        change = before - 1.0                        ; тяжело раненого не убивать, остаток — в следующий раз
+        If change <= 0.0
+            Return
+        EndIf
+    EndIf
+    akActor.ModValue(Health, -change)
+    akActor.SetValue(NSL_HealthCapApplied, applied + change)
+    If DebugOn
+        Log("hpcap " + akActor.GetActorBase() + " lvl=" + level + " cap=" + aiCap + " base=" \
+            + akActor.GetBaseValue(Health) + " hp " + before + " -> " + akActor.GetValue(Health) + " (" \
+            + akActor.GetValuePercentage(Health) + ") removed=" + (applied + change))
+        Flush()
+    EndIf
+EndFunction
+
 ; --- отладка: set NSL_Debug to 1 ------------------------------------------------------------
+
+; Настройки обхода — когда они меняются (число найденных — на тот момент, оно само по себе не повод писать).
+Function LogScan(Int aiCap, Int aiFound, Int aiTypes)
+    String info = "hpcap scan cap=" + aiCap + " bonus=" + HealthLevelBonus + " types=" + aiTypes
+    If info != LastScanInfo
+        LastScanInfo = info
+        Log(info + " found=" + aiFound)
+        Flush()
+    EndIf
+EndFunction
 
 Function UpdateDebug()
     Bool wanted = NSL_Debug.GetValue() >= 0.5
     If wanted && !DebugOn
         DebugOn = true
         LogLines = new String[0]
+        Skipped = new Actor[0]
+        LastScanInfo = ""
         LastHealth = Player.GetValue(Health)
         Log("debug on")
         LogState()
