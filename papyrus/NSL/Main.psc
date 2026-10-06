@@ -15,6 +15,10 @@ Scriptname NSL:Main extends Quest
 ;   множитель ложится поверх. Оба случая проверены тестовым плагином (PLAN.md, «Результаты теста»).
 ; Выживание даёт ×2 до брони (перк HC_DamageMultPerk через HC_IncomingDamageMult) и ×2 после (GMST);
 ; второе сокращается, первое учитывается как afPre.
+; Силовая броня: ванильный перк PowerArmorPerk умножает входящий урон до брони на PADamageMult игрока,
+; каждая целая часть ванильной силовой брони снижает его на 0.05 (EnchPA_ReducePADamageMult), полный
+; костюм — 0.7. Мод компенсирует ровно эти 0.7: в целой силовой броне урон такой же, как в обычной
+; броне с тем же DR, каждая сломанная часть добавляет урона (PA_REFERENCE).
 ;
 ; Здоровье врагов. Движок даёт NPC здоровье = раса + запись NPC + fNPCHealthLevelBonus (5) · (уровень − 1)
 ; (Fallout4.exe 1.10.163, 0x1405BADF0; у игрока своя GMST fPCHealthLevelBonus). Если задан предел
@@ -28,6 +32,7 @@ ActorValue Property DamageResist Auto Const Mandatory
 ActorValue Property EnergyResist Auto Const Mandatory
 ActorValue Property UnarmedDamage Auto Const Mandatory
 ActorValue Property HC_IncomingDamageMult Auto Const Mandatory
+ActorValue Property PADamageMult Auto Const Mandatory
 GlobalVariable Property HC_Rule_ScaleDamage Auto Const Mandatory
 GlobalVariable Property NSL_ThreatLevel Auto Const Mandatory
 GlobalVariable Property NSL_Enabled Auto Const Mandatory
@@ -56,6 +61,8 @@ Float Property BETA = 0.365 AutoReadOnly            ; fPhysicalArmorDmgReduction
 Float Property MAX_COEF = 0.99 AutoReadOnly
 Float Property ARMOR_EFFECT = 0.75 AutoReadOnly     ; броня гасит на четверть меньше
 Float Property FLOOR_DIVISOR = 16.0 AutoReadOnly    ; Пол = HP_эталон / 16: без брони на Выживании 4 попадания
+Float Property Q_MAX = 20.0 AutoReadOnly            ; потолок Q/P: ошибка в типичном уроне полосы не станет убийством
+Float Property PA_REFERENCE = 0.7 AutoReadOnly      ; PADamageMult целой ванильной силовой брони (6 частей по 0.05)
 Float Property HP_REF_BASE = 105.0 AutoReadOnly     ; HP при ВЫН 5: 80 + 5·5 + (L − 1)·(2.5 + 5/2)
 Float Property HP_REF_PER_LEVEL = 5.0 AutoReadOnly
 Float Property POLL_INTERVAL = 3.0 AutoReadOnly
@@ -75,6 +82,8 @@ Float LastER
 Float LastThreat
 Float LastEnabled
 Float LastPre
+Float LastPA
+Bool LastInPA
 Bool DebugOn
 Float LastHealth
 String[] LogLines
@@ -124,9 +133,11 @@ Function Check()
     Float threat = NSL_ThreatLevel.GetValue()
     Float enabled = NSL_Enabled.GetValue()
     Float pre = SurvivalPreMult()
+    Float pa = Player.GetValue(PADamageMult)
+    Bool inPA = Player.IsInPowerArmor()
     If !Calculated || level != LastLevel || Math.abs(dr - LastDR) > 0.5 || Math.abs(er - LastER) > 0.5 \
-            || threat != LastThreat || enabled != LastEnabled || pre != LastPre
-        Recalc(level, dr, er, threat, enabled, pre)
+            || threat != LastThreat || enabled != LastEnabled || pre != LastPre || pa != LastPA || inPA != LastInPA
+        Recalc(level, dr, er, threat, enabled, pre, pa, inPA)
         Calculated = true
         LastLevel = level
         LastDR = dr
@@ -134,6 +145,8 @@ Function Check()
         LastThreat = threat
         LastEnabled = enabled
         LastPre = pre
+        LastPA = pa
+        LastInPA = inPA
         If DebugOn
             LogState()
         EndIf
@@ -150,7 +163,9 @@ Float Function SurvivalPreMult()
     Return 1.0
 EndFunction
 
-Function Recalc(Int aiLevel, Float afDR, Float afER, Float afThreat, Float afEnabled, Float afPre)
+; afPA — PADamageMult (движок умножает на него урон до брони), abInPA — игрок в силовой броне.
+Function Recalc(Int aiLevel, Float afDR, Float afER, Float afThreat, Float afEnabled, Float afPre, Float afPA, \
+        Bool abInPA)
     Int n = BandAV.Length
     Int i = 0
     If afEnabled < 0.5
@@ -163,6 +178,13 @@ Function Recalc(Int aiLevel, Float afDR, Float afER, Float afThreat, Float afEna
     Float k = KFor(aiLevel)
     Float floorDamage = (HP_REF_BASE + HP_REF_PER_LEVEL * (aiLevel - 1)) / FLOOR_DIVISOR
     Float s = Math.pow(2.0, (afThreat - 5.0) / 4.0)
+    ; Целая силовая броня — как обычная броня с тем же DR, сломанные части — урон × PADamageMult / 0.7.
+    If afPA <= 0.0
+        afPA = 1.0
+    EndIf
+    If abInPA
+        s *= afPA / PA_REFERENCE
+    EndIf
     Float ph
     Float en
     Float total
@@ -177,14 +199,14 @@ Function Recalc(Int aiLevel, Float afDR, Float afER, Float afThreat, Float afEna
         y = 1.0
         If total > 0.0
             kBand = 1.0 + BandKWeight[i] * (k - 1.0)
-            q = Math.Max(kBand * total, BandFloorCoef[i] * floorDamage) / total
+            q = Math.Min(Math.Max(kBand * total, BandFloorCoef[i] * floorDamage) / total, Q_MAX)
             kind = BandKind[i]
             If kind == KIND_PHYS || kind == KIND_MIXED
-                y = SolvePhys(ph, q, s, afPre, afDR)
+                y = SolvePhys(ph, q, s, afPre, afDR, afPA)
             ElseIf kind == KIND_ENERGY
-                y = SolveEnergy(en, q, s, afPre, afER)
+                y = SolveEnergy(en, q, s, afPre, afER, afPA)
             Else
-                y = SolveEnergy(en, q, s, afPre, afER) / SolvePhys(ph, q, s, afPre, afDR)
+                y = SolveEnergy(en, q, s, afPre, afER, afPA) / SolvePhys(ph, q, s, afPre, afDR, afPA)
             EndIf
         EndIf
         Player.SetValue(BandAV[i], y - 1.0)
@@ -235,18 +257,19 @@ Float Function InvertArmor(Float afTarget, Float afResist)
     Return x
 EndFunction
 
-; Физический урон: множитель действует до брони.
-Float Function SolvePhys(Float afDamage, Float afScale, Float afThreat, Float afPre, Float afResist)
+; Физический урон: множитель действует до брони. afPA — множитель силовой брони, движок применяет его
+; до брони вместе с нашим, цель он не меняет.
+Float Function SolvePhys(Float afDamage, Float afScale, Float afThreat, Float afPre, Float afResist, Float afPA)
     Float paper = afScale * afDamage * afPre
     Float target = afThreat * paper * SoftCoef(paper, afResist)
-    Return InvertArmor(target, afResist) / (afDamage * afPre)
+    Return InvertArmor(target, afResist) / (afDamage * afPre * afPA)
 EndFunction
 
-; Энергоурон: коэффициент брони движок берёт от базового урона, множитель ложится поверх.
-Float Function SolveEnergy(Float afDamage, Float afScale, Float afThreat, Float afPre, Float afResist)
+; Энергоурон: коэффициент брони движок берёт от базового урона, множители ложатся поверх.
+Float Function SolveEnergy(Float afDamage, Float afScale, Float afThreat, Float afPre, Float afResist, Float afPA)
     Float paper = afScale * afDamage * afPre
     Float target = afThreat * paper * SoftCoef(paper, afResist)
-    Return target / (afDamage * afPre * Coef(afDamage, afResist))
+    Return target / (afDamage * afPre * afPA * Coef(afDamage, afResist))
 EndFunction
 
 ; --- здоровье врагов --------------------------------------------------------------------------
@@ -366,7 +389,8 @@ EndFunction
 
 Function LogState()
     Log("state level=" + LastLevel + " DR=" + LastDR + " ER=" + LastER + " threat=" + LastThreat \
-        + " enabled=" + LastEnabled + " pre=" + LastPre + " K=" + KFor(LastLevel))
+        + " enabled=" + LastEnabled + " pre=" + LastPre + " PA=" + LastInPA + " PADamageMult=" + LastPA \
+        + " K=" + KFor(LastLevel))
     Int i = 0
     String line = "bands"
     While i < BandAV.Length

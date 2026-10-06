@@ -42,6 +42,7 @@ AV_DAMAGE_RESIST = 0x2E3
 AV_ENERGY_RESIST = 0x2EB
 AV_UNARMED_DAMAGE = 0x2DF
 AV_HC_INCOMING = 0x84A
+AV_PA_DAMAGE_MULT = 0x1C87D2                    # PADamageMult: ванильный PowerArmorPerk множит на него урон
 GLOB_HC_SCALE_DAMAGE = 0x84C
 DT_ENERGY = 0x60A81
 # Ключевые слова рас, покрывающие всех актёров игры и DLC, кроме двух рас Far Harbor (их ключевое слово
@@ -200,7 +201,8 @@ def build(data):
     s = Script(SCRIPT_MAIN)
     for name, fid in [('NSL_Perk', FID_PERK), ('Health', AV_HEALTH), ('DamageResist', AV_DAMAGE_RESIST),
                       ('EnergyResist', AV_ENERGY_RESIST), ('UnarmedDamage', AV_UNARMED_DAMAGE),
-                      ('HC_IncomingDamageMult', AV_HC_INCOMING), ('HC_Rule_ScaleDamage', GLOB_HC_SCALE_DAMAGE),
+                      ('HC_IncomingDamageMult', AV_HC_INCOMING), ('PADamageMult', AV_PA_DAMAGE_MULT),
+                      ('HC_Rule_ScaleDamage', GLOB_HC_SCALE_DAMAGE),
                       ('NSL_ThreatLevel', FID_THREAT), ('NSL_Enabled', FID_ENABLED), ('NSL_Debug', FID_DEBUG),
                       ('NSL_HealthLevelCap', FID_HEALTH_CAP), ('NSL_HealthCapApplied', FID_HEALTH_APPLIED),
                       ('NSL_ActorTypes', FID_ACTOR_TYPES)]:

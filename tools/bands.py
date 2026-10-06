@@ -33,6 +33,11 @@ FLAMER_KW = {'WeaponTypeFlamer', 'WeaponTypeCryolater'}
 SKIP_EDID = re.compile(r'(?i)^(test|aaa_|dummy|tutorial|vrworkshop)|dummy|_fake$|flamethrower|trap')
 # Дальние атаки существ, которые не помечены WeaponTypeUnarmed, но по сути — атака существа.
 CREATURE_RANGED = {'WeapBloatfly', 'WeapMirelurkQueenLeft', 'WeapMirelurkQueenRight', 'WeapMirelurkKing'}
+# Урон попадания, измеренный в игре, когда он не совпадает с записью оружия. Дутень: у WeapBloatfly урон 1,
+# но выстрел дутня 75-го уровня бьёт на ~27, 9-го — на ~17 (2026-10-06: множитель полосы выставлялся из
+# консоли, ×1/×4/×13 дают 30/27/26; откуда урон и его рост с уровнем, не найдено). При уроне 1 множитель
+# полосы тянул выстрел к «полу» с ошибкой в разы — дутень убивал с одного выстрела.
+MEASURED_HIT = {'WeapBloatfly': 27.0}
 # «Безоружные» атаки людей: их урон с уровнем не растёт, им K нужен, как оружию.
 HUMAN_UNARMED = {'UnarmedHuman', 'UnarmedSuperMutant', 'UnarmedPowerArmor', 'BoxingGlove', 'Knuckles',
                  'PowerFist', 'DeathclawGauntlet'}
@@ -112,7 +117,7 @@ def classify(w):
     kw = set(w['keywords'])
     energy = w['types'].get('dtEnergy', 0.0)
     other = sum(v for t, v in w['types'].items() if t != 'dtEnergy')
-    phys = w['base'] + other
+    phys = MEASURED_HIT.get(w['edid'], w['base']) + other
     n = max(1, w['num_proj'])
     if kw & EXPLOSIVE_KW:
         return 'explosive', None, None, 0, 0

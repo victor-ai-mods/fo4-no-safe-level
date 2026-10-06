@@ -26,7 +26,12 @@ in full: the design notes are in Russian (`ANALYSIS.md`, `PLAN.md`), the details
   stops 25% less of the damage. The script solves the inverse problem so the vanilla formula produces
   exactly that hit.
 - Creature attacks get no `K` (their damage already grows with the variant level), only the floor and the
-  armor change.
+  armor change. `Q/P` is capped at 20, so a wrong typical damage can't turn into a one-shot (the bloatfly's
+  weapon says 1, a level 75 bloatfly shot hits for ~27: measured in game, used as the band damage).
+- **Power armor.** The vanilla `PowerArmorPerk` multiplies incoming damage before armor by the player's
+  `PADamageMult`; every intact piece of vanilla power armor lowers it by 0.05 (`EnchPA_ReducePADamageMult`),
+  a full suit gives 0.7. The script compensates exactly 0.7: a full suit protects like ordinary armor with
+  the same DR, every broken piece adds damage (x `PADamageMult` / 0.7).
 - **Enemy health.** The engine gives an NPC health = race health + the NPC record's health +
   `fNPCHealthLevelBonus` (5) x (level - 1) (found in `Fallout4.exe` 1.10.163, function `0x1405BADF0`; confirmed
   in game: a level 68 survivalist raider has 40 + 350 + 5 x 67 = 725). Enemy variants are fixed-level
